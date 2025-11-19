@@ -164,6 +164,7 @@ export default function App(){
   const [confirmDelete, setConfirmDelete] = useState<{open: boolean; segId: string} | null>(null)
   const lastDeletedRef = useRef<Segment | null>(null)
   const [toast, setToast] = useState<{message: string; actionLabel?: string; onAction?: ()=>void} | null>(null)
+  const [playbackRate, setPlaybackRate] = useState<number>(1.0); // 默认 1x
 
   useEffect(()=>{
     const closeMenu = () => setCtxMenu(null)
@@ -262,6 +263,12 @@ export default function App(){
     if (currentEl) currentEl.scrollIntoView({ block: 'center' })
   }, [currentSubtitle?.id])
 
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.playbackRate = playbackRate;
+    }
+  }, [playbackRate])
+
   // Default tracks when no RTTM is loaded
   const defaultTracks = useMemo(() => {
     if (speakers.length > 0) return []
@@ -304,7 +311,7 @@ export default function App(){
   const togglePlay = () => {
     const el = videoRef.current
     if(!el) return
-    if(el.paused){ el.play(); setIsPlaying(true) } else { el.pause(); setIsPlaying(false) }
+    if(el.paused){ el.play(); el.playbackRate = playbackRate; setIsPlaying(true) } else { el.pause(); setIsPlaying(false) }
   }
   const seek = (t:number) => {
     const el = videoRef.current; if(!el) return
@@ -637,47 +644,9 @@ export default function App(){
   // Waveform generation from media
   const [wavePeaks, setWavePeaks] = useState<Float32Array | null>(null)
   const [waveFailed, setWaveFailed] = useState<boolean>(false)
-  useEffect(()=>{
-    let aborted = false
-    async function buildWave(){
-      setWaveFailed(false)
-      setWavePeaks(null)
-      const url = media?.url
-      if(!url) return
-      try {
-        const res = await fetch(url)
-        const buf = await res.arrayBuffer()
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
-        const audioBuf = await ctx.decodeAudioData(buf.slice(0))
-        if(aborted) return
-        const ch0 = audioBuf.getChannelData(0)
-        const ch1 = audioBuf.numberOfChannels>1 ? audioBuf.getChannelData(1) : null
-        const totalSec = audioBuf.duration
-        const samplesPerSec = 50
-        const totalSamples = Math.max(1, Math.min(200000, Math.floor(totalSec * samplesPerSec)))
-        const blockSize = Math.max(1, Math.floor(ch0.length / totalSamples))
-        const peaks = new Float32Array(totalSamples)
-        for(let i=0;i<totalSamples;i++){
-          const start = i * blockSize
-          const end = Math.min(ch0.length, start + blockSize)
-          let maxAbs = 0
-          for(let j=start;j<end;j++){
-            const v0 = Math.abs(ch0[j])
-            const v1 = ch1? Math.abs(ch1[j]) : 0
-            const v = v0>v1? v0 : v1
-            if(v>maxAbs) maxAbs = v
-          }
-          peaks[i] = maxAbs
-        }
-        setWavePeaks(peaks)
-        ctx.close()
-      } catch (e) {
-        setWaveFailed(true)
-      }
-    }
-    buildWave()
-    return ()=>{ aborted = true }
-  }, [media?.url])
+   useEffect(() => {
+    setWaveFailed(true); // 直接标记 waveform 不可用
+  }, [media?.url]);
 
   // Draw waveform on canvas sized to timeline width
   useEffect(()=>{
@@ -904,6 +873,21 @@ export default function App(){
             <button className="btn icon" title="Play/Pause" onClick={togglePlay}>{isPlaying? <Pause size={16}/> : <Play size={16}/>}</button>
             <button className="btn icon" title="Next segment" onClick={jumpNext}><SkipForward size={16}/></button>
             <div className="space" />
+            {/* 添加播放速率控制 */}
+            <select 
+              value={playbackRate} 
+              onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
+              style={{ margin: '0 10px', padding: '4px', borderRadius: '4px', border: '1px solid #4b5563', background: '#1f2937', color: 'white' }}
+            >
+              <option value={0.25}>0.25x</option>
+              <option value={0.5}>0.5x</option>
+              <option value={0.75}>0.75x</option>
+              <option value={1}>1x</option>
+              <option value={1.25}>1.25x</option>
+              <option value={1.5}>1.5x</option>
+              <option value={2}>2x</option>
+              <option value={3}>3x</option>
+            </select>
             <button className="btn icon" title="Zoom Out" onClick={zoomOut}><ZoomOut size={16}/></button>
             <input type="range" min={0.25} max={10} step={0.05} value={zoom} onChange={e=>setZoom(+e.target.value)} />
             <button className="btn icon" title="Zoom In" onClick={zoomIn}><ZoomIn size={16}/></button>
@@ -911,8 +895,8 @@ export default function App(){
           </div>
 
           {/* Timeline area with dynamic height */}
-          <div className="timeline-wrap" style={{flex: '1 1 auto', minHeight: timelineMinHeight, display:'flex', flexDirection:'column', padding: '0 12px'}}>
-            <div className="timeline" style={{flex: '1 1 auto', minHeight: timelineMinHeight}} ref={waveRef} onClick={onClickTimeline}
+          <div className="timeline-wrap" style={{flex: '1 1 auto', minHeight: '200px', display:'flex', flexDirection:'column', padding: '0 12px'}}>
+            <div className="timeline" style={{flex: '1 1 auto', minHeight: '200px'}} ref={waveRef} onClick={onClickTimeline}
               onPointerDown={onTimelinePointerDown}
               onPointerMove={onTimelinePointerMove}
               onPointerUp={onTimelinePointerUp}
@@ -963,141 +947,239 @@ export default function App(){
               </div>
 
               {/* Tracks container fills remaining height */}
-              <div className="tracks" style={{width: '100%', minWidth: timelineWidth, flex: '1 1 auto', minHeight: actualTrackCount * 28}}>
-                {/* SPEAKER TRACKS (vertically scrollable) */}
-                {allTracks.map(spk=>{
-                  const hidden = speakers.length > 0 ? !spk.visible : false
-                  return (
-                    <div key={spk.id} className="track" style={{width: '100%', minWidth: timelineWidth, opacity: hidden?0.3:1}}
-                      onMouseMove={(e)=>{
-                        if(speakers.length===0) return
-                        if((e.target as HTMLElement).closest('.seg')) return
-                        const t = toTimeFromClientX(e.clientX)
-                        const dur = 0.2
-                        const start = Math.max(0, Math.min((duration||0) - dur, t - dur/2))
-                        const end = Math.min(duration||start+dur, start + dur)
-                        setGhostSeg({ speakerId: spk.id, start, end })
-                      }}
-                      onMouseLeave={()=> setGhostSeg(null)}
-                      onClick={(e)=>{
-                        if((e.target as HTMLElement).closest('.seg')) return
-                        if(speakers.length===0) return
-                        // prefer ghost position if present
-                        let t = toTimeFromClientX(e.clientX)
-                        if(ghostSeg && ghostSeg.speakerId===spk.id){ t = ghostSeg.start }
-                        const newId = createSegmentAt(spk.id, t)
-                        setSelectedSegId(newId)
+              {/* Tracks container fills remaining height */}
+              <div className="tracks" style={{ 
+                width: '100%', 
+                minWidth: timelineWidth, 
+                flex: '1 1 auto', 
+                display: 'flex', 
+                flexDirection: 'column',
+                position: 'relative' // 用于 DER overlay 定位
+              }}>
+                {/* 可滚动的轨道容器 */}
+                <div
+                  style={{
+                    flex: 'none',
+                    overflowY: 'auto',
+                    paddingRight: '8px',
+                    maxHeight: '40vh',
+                  }}
+                >
+                  {allTracks.map(spk => {
+                    const hidden = speakers.length > 0 ? !spk.visible : false
+                    return (
+                      <div
+                        key={spk.id}
+                        className="track"
+                        title={spk.name} // 👈 悬停显示说话人名
+                        style={{
+                          width: '100%',
+                          minWidth: timelineWidth,
+                          height: 28,
+                          background: '#121624',
+                          border: '1px solid #20263a',
+                          borderTop: 'none',
+                          opacity: hidden ? 0.3 : 1,
+                          boxSizing: 'border-box',
+                          cursor: 'default'
+                        }}
+                        onMouseMove={(e) => {
+                          if (speakers.length === 0) return
+                          if ((e.target as HTMLElement).closest('.seg')) return
+                          const t = toTimeFromClientX(e.clientX)
+                          const dur = 0.2
+                          const start = Math.max(0, Math.min((duration || 0) - dur, t - dur / 2))
+                          const end = Math.min(duration || start + dur, start + dur)
+                          setGhostSeg({ speakerId: spk.id, start, end })
+                        }}
+                        onMouseLeave={() => setGhostSeg(null)}
+                        onClick={(e) => {
+                          if ((e.target as HTMLElement).closest('.seg')) return
+                          if (speakers.length === 0) return
+                          let t = toTimeFromClientX(e.clientX)
+                          if (ghostSeg && ghostSeg.speakerId === spk.id) { t = ghostSeg.start }
+                          const newId = createSegmentAt(spk.id, t)
+                          setSelectedSegId(newId)
+                        }}
+                      >
+                        {ghostSeg && ghostSeg.speakerId === spk.id && (
+                          <div
+                            className="seg ghost"
+                            style={{
+                              left: ghostSeg.start * pxPerSec,
+                              width: (ghostSeg.end - ghostSeg.start) * pxPerSec
+                            }}
+                          />
+                        )}
+                        {speakers.length > 0 ?
+                          segments.filter(s => s.speakerId === spk.id).map(seg => {
+                            const left = seg.start * pxPerSec
+                            const w = (seg.end - seg.start) * pxPerSec
+                            const isActive = currentTime >= seg.start && currentTime < seg.end
+                            return (
+                              <div
+                                key={seg.id}
+                                className={`seg${isActive ? ' active' : ''}${selectedSegId === seg.id ? ' selected' : ''}`}
+                                style={{ left, width: w, background: spk.color }}
+                                onMouseEnter={(e) => {
+                                  setTooltip({
+                                    x: e.clientX,
+                                    y: e.clientY - 30,
+                                    text: `${spk.name}  ${formatHMSms(seg.start)}–${formatHMSms(seg.end)} (${formatHMSms(seg.end - seg.start)})`
+                                  })
+                                }}
+                                onMouseLeave={() => setTooltip(null)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedSegId(seg.id);
+                                  seek(seg.start);
+                                }}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setSelectedSegId(seg.id);
+                                  setCtxMenu({ x: e.clientX, y: e.clientY, segId: seg.id });
+                                }}
+                              >
+                                <div
+                                  className="handle left"
+                                  onPointerDown={(e) => {
+                                    e.stopPropagation();
+                                    dragRef.current = { type: 'start', speakerId: spk.id, segId: seg.id };
+                                    try { (e.target as Element).setPointerCapture?.(e.pointerId) } catch {}
+                                    const onMove = (ev: PointerEvent) => {
+                                      const t = toTimeFromClientX(ev.clientX);
+                                      setDragTip({ x: ev.clientX, y: ev.clientY - 28, text: `${formatHMSms(t)} →` });
+                                      updateSegmentTime(seg.id, Math.min(t, seg.end - MIN_DUR), seg.end);
+                                    };
+                                    const onUp = (ev: PointerEvent) => {
+                                      try { (e.target as Element).releasePointerCapture?.((ev as any).pointerId) } catch {}
+                                      dragRef.current = null; setDragTip(null);
+                                      window.removeEventListener('pointermove', onMove);
+                                      window.removeEventListener('pointerup', onUp);
+                                    };
+                                    window.addEventListener('pointermove', onMove);
+                                    window.addEventListener('pointerup', onUp);
+                                  }}
+                                />
+                                <div
+                                  className="handle right"
+                                  onPointerDown={(e) => {
+                                    e.stopPropagation();
+                                    dragRef.current = { type: 'end', speakerId: spk.id, segId: seg.id };
+                                    try { (e.target as Element).setPointerCapture?.(e.pointerId) } catch {}
+                                    const onMove = (ev: PointerEvent) => {
+                                      const t = toTimeFromClientX(ev.clientX);
+                                      setDragTip({ x: ev.clientX, y: ev.clientY - 28, text: `← ${formatHMSms(t)}` });
+                                      updateSegmentTime(seg.id, seg.start, Math.max(t, seg.start + MIN_DUR));
+                                    };
+                                    const onUp = (ev: PointerEvent) => {
+                                      try { (e.target as Element).releasePointerCapture?.((ev as any).pointerId) } catch {}
+                                      dragRef.current = null; setDragTip(null);
+                                      window.removeEventListener('pointermove', onMove);
+                                      window.removeEventListener('pointerup', onUp);
+                                    };
+                                    window.addEventListener('pointermove', onMove);
+                                    window.addEventListener('pointerup', onUp);
+                                  }}
+                                />
+                              </div>
+                            );
+                          }) :
+                          <div style={{
+                            position: 'absolute',
+                            left: '10px',
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            color: '#6B7280',
+                            fontSize: '12px'
+                          }}>
+                            Empty track
+                          </div>
+                        }
+                      </div>
+                    );
+                  })}
+
+                  {/* Reference track overlay (locked, gray) */}
+                  {showRefTrack && refSegments.length > 0 && (
+                    <div
+                      className="track"
+                      style={{
+                        width: '100%',
+                        minWidth: timelineWidth,
+                        height: 28,
+                        background: '#0f121b',
+                        border: '1px solid #20263a',
+                        borderTop: 'none',
+                        boxSizing: 'border-box'
                       }}
                     >
-                      {ghostSeg && ghostSeg.speakerId===spk.id && (
-                        <div className="seg ghost" style={{left: ghostSeg.start * pxPerSec, width: (ghostSeg.end - ghostSeg.start) * pxPerSec}} />
-                      )}
-                      {speakers.length > 0 ? 
-                        segments.filter(s=>s.speakerId===spk.id).map(seg=>{
-                          const left = seg.start * pxPerSec
-                          const w = (seg.end - seg.start) * pxPerSec
-                          const isActive = currentTime >= seg.start && currentTime < seg.end
-                          return (
-                            <div key={seg.id} className={`seg${isActive? ' active':''}${selectedSegId===seg.id?' selected':''}`}
-                              style={{left, width:w, background: spk.color}}
-                              onMouseEnter={(e)=>{
-                                setTooltip({x: e.clientX, y: e.clientY-30, text: `${spk.name}  ${formatHMSms(seg.start)}–${formatHMSms(seg.end)} (${formatHMSms(seg.end-seg.start)})`})
-                              }}
-                              onMouseLeave={()=>setTooltip(null)}
-                              onClick={(e)=>{ e.stopPropagation(); setSelectedSegId(seg.id); seek(seg.start) }}
-                              onContextMenu={(e)=>{ e.preventDefault(); e.stopPropagation(); setSelectedSegId(seg.id); setCtxMenu({x: e.clientX, y: e.clientY, segId: seg.id}) }}
-                            >
-                              <div className="handle left" onPointerDown={(e)=>{
-                                e.stopPropagation()
-                                dragRef.current = { type: 'start', speakerId: spk.id, segId: seg.id }
-                                try { (e.target as Element).setPointerCapture?.(e.pointerId) } catch {}
-                                const onMove = (ev: PointerEvent) => {
-                                  const t = toTimeFromClientX(ev.clientX)
-                                  setDragTip({x: ev.clientX, y: ev.clientY-28, text: `${formatHMSms(t)} →`})
-                                  updateSegmentTime(seg.id, Math.min(t, seg.end - MIN_DUR), seg.end)
-                                }
-                                const onUp = (ev: PointerEvent) => {
-                                  try { (e.target as Element).releasePointerCapture?.((ev as any).pointerId) } catch {}
-                                  dragRef.current = null; setDragTip(null)
-                                  window.removeEventListener('pointermove', onMove)
-                                  window.removeEventListener('pointerup', onUp)
-                                }
-                                window.addEventListener('pointermove', onMove)
-                                window.addEventListener('pointerup', onUp)
-                              }} />
-                              <div className="handle right" onPointerDown={(e)=>{
-                                e.stopPropagation()
-                                dragRef.current = { type: 'end', speakerId: spk.id, segId: seg.id }
-                                try { (e.target as Element).setPointerCapture?.(e.pointerId) } catch {}
-                                const onMove = (ev: PointerEvent) => {
-                                  const t = toTimeFromClientX(ev.clientX)
-                                  setDragTip({x: ev.clientX, y: ev.clientY-28, text: `← ${formatHMSms(t)}`})
-                                  updateSegmentTime(seg.id, seg.start, Math.max(t, seg.start + MIN_DUR))
-                                }
-                                const onUp = (ev: PointerEvent) => {
-                                  try { (e.target as Element).releasePointerCapture?.((ev as any).pointerId) } catch {}
-                                  dragRef.current = null; setDragTip(null)
-                                  window.removeEventListener('pointermove', onMove)
-                                  window.removeEventListener('pointerup', onUp)
-                                }
-                                window.addEventListener('pointermove', onMove)
-                                window.addEventListener('pointerup', onUp)
-                              }} />
-                            </div>
-                          )
-                        }) : 
-                        // Show empty track when no RTTM
-                        <div style={{
-                          position: 'absolute',
-                          left: '10px',
-                          top: '50%',
-                          transform: 'translateY(-50%)',
-                          color: '#6B7280',
-                          fontSize: '12px'
-                        }}>
-                          Empty track
-                        </div>
-                      }
+                      {refSegments.map(seg => {
+                        const left = seg.start * pxPerSec
+                        const w = (seg.end - seg.start) * pxPerSec
+                        return (
+                          <div
+                            key={'ref-' + seg.id}
+                            className={'seg'}
+                            style={{ left, width: w, background: '#6b7280', opacity: 0.5 }}
+                            onMouseEnter={(e) => {
+                              setTooltip({
+                                x: e.clientX,
+                                y: e.clientY - 30,
+                                text: `REF ${seg.speakerId}  ${formatHMSms(seg.start)}–${formatHMSms(seg.end)}`
+                              });
+                            }}
+                            onMouseLeave={() => setTooltip(null)}
+                          />
+                        );
+                      })}
+                      <div className="badge-sm" style={{ position: 'absolute', left: 6, top: 6, color: '#cbd5e1' }}>Reference</div>
                     </div>
-                  )
-                })}
+                  )}
+                </div>
 
-                {/* Reference track overlay (locked, gray) */}
-                {showRefTrack && refSegments.length>0 && (
-                  <div className="track" style={{width: '100%', minWidth: timelineWidth, background:'#0f121b'}}>
-                    {refSegments.map(seg=>{
-                      const left = seg.start * pxPerSec
-                      const w = (seg.end - seg.start) * pxPerSec
+                {/* DER overlay (覆盖整个 tracks 区域) */}
+                {showDER && derOverlay.length > 0 && (
+                  <div
+                    className="der-overlay"
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      pointerEvents: 'none'
+                    }}
+                  >
+                    {derOverlay.map((iv, idx) => {
+                      if (iv.type === 'OK') return null;
+                      const left = iv.start * pxPerSec;
+                      const w = Math.max(1, (iv.end - iv.start) * pxPerSec);
+                      const color = iv.type === 'MS' ? '#60a5fa' : iv.type === 'FA' ? '#ef4444' : '#f59e0b';
                       return (
-                        <div key={'ref-'+seg.id} className={'seg'}
-                          style={{left, width:w, background:'#6b7280', opacity:0.5}}
-                          onMouseEnter={(e)=>{
-                            setTooltip({x: e.clientX, y: e.clientY-30, text: `REF ${seg.speakerId}  ${formatHMSms(seg.start)}–${formatHMSms(seg.end)}`})
+                        <div
+                          key={idx}
+                          className={`der-chunk ${iv.type.toLowerCase()}`}
+                          style={{
+                            position: 'absolute',
+                            left,
+                            width: w,
+                            top: 0,
+                            bottom: 0,
+                            background: color,
+                            opacity: 0.18
                           }}
-                          onMouseLeave={()=>setTooltip(null)}
+                          onMouseEnter={(e) =>
+                            setTooltip({
+                              x: e.clientX,
+                              y: e.clientY - 30,
+                              text: `${iv.type}  ${formatHMSms(iv.start)}–${formatHMSms(iv.end)} (${formatHMSms(iv.end - iv.start)})`
+                            })
+                          }
+                          onMouseLeave={() => setTooltip(null)}
                         />
-                      )
-                    })}
-                    <div className="badge-sm" style={{position:'absolute', left:6, top:6, color:'#cbd5e1'}}>Reference</div>
-                  </div>
-                )}
-
-                {/* DER overlay */}
-                {showDER && derOverlay.length>0 && (
-                  <div className="der-overlay" style={{width: '100%', minWidth: timelineWidth}}>
-                    {derOverlay.map((iv, idx)=>{
-                      if(iv.type==='OK') return null
-                      const left = iv.start * pxPerSec
-                      const w = Math.max(1, (iv.end - iv.start) * pxPerSec)
-                      const color = iv.type==='MS'? '#60a5fa' : iv.type==='FA'? '#ef4444' : '#f59e0b'
-                      const label = iv.type
-                      return (
-                        <div key={idx} className={`der-chunk ${label.toLowerCase()}`}
-                          style={{left, width:w, background: color, opacity: 0.18, position:'absolute', top:0, bottom:0}}
-                          onMouseEnter={(e)=> setTooltip({x:e.clientX, y:e.clientY-30, text: `${label}  ${formatHMSms(iv.start)}–${formatHMSms(iv.end)} (${formatHMSms(iv.end-iv.start)})`})}
-                          onMouseLeave={()=> setTooltip(null)}
-                        />
-                      )
+                      );
                     })}
                   </div>
                 )}
